@@ -31,14 +31,25 @@ public:
     Controller& operator=(Controller const& p_rhs) = delete;
 
     void receive(std::unique_ptr<Event> e) override;
+    
 
 private:
-    struct Segment
+struct Segment
     {
         int x;
         int y;
         int ttl;
     };
+    bool isNewSegmentPartOfSnake(Segment& newHead);
+    bool isNewHeadOnFoodPosition(Segment& newHead);
+    bool isHeadOutsideMap(Segment& newHead);
+    void displayLivingSegments();
+    bool isNewHeadWrong(Segment& newHead);
+    void plceNewHead(Segment& newHead);
+
+    Segment makeNewHead();
+    
+    
 
     IPort& m_displayPort;
     IPort& m_foodPort;

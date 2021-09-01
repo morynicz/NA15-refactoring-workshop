@@ -2,9 +2,10 @@
 
 #include <algorithm>
 #include <sstream>
-
+#include <stdexcept>
 #include "EventT.hpp"
 #include "IPort.hpp"
+
 
 namespace Snake
 {
@@ -28,7 +29,8 @@ Controller::Controller(IPort& p_displayPort, IPort& p_foodPort, IPort& p_scorePo
     int foodX, foodY;
     istr >> w >> width >> height >> f >> foodX >> foodY >> s;
 
-    if (w == 'W' and f == 'F' and s == 'S') {
+    if (w == 'W' and f == 'F' and s == 'S') 
+    {
         m_mapDimension = std::make_pair(width, height);
         m_foodPosition = std::make_pair(foodX, foodY);
 
@@ -58,58 +60,74 @@ Controller::Controller(IPort& p_displayPort, IPort& p_foodPort, IPort& p_scorePo
 
             m_segments.push_back(seg);
         }
-    } else {
+    } 
+    else {
         throw ConfigurationError();
     }
 }
-
-void Controller::receive(std::unique_ptr<Event> e)
+bool Controller::isNewSegmentPartOfSnake(Segment& newHead)
 {
-    try {
-        auto const& timerEvent = *dynamic_cast<EventT<TimeoutInd> const&>(*e);
+    for (auto& segment : m_segments) 
+    {
+        if (segment.x == newHead.x and segment.y == newHead.y) 
+        {
+            m_scorePort.send(std::make_unique<EventT<LooseInd>>());
+            return true;
+        }
+    }
+    return false;
+}
+Controller::Segment Controller::makeNewHead()
+{
+    Segment newHead;
+    Segment const& currentHead = m_segments.front();
 
-        Segment const& currentHead = m_segments.front();
+    newHead.x = currentHead.x + ((m_currentDirection & 0b01) ? (m_currentDirection & 0b10) ? 1 : -1 : 0);
+    newHead.y = currentHead.y + (not (m_currentDirection & 0b01) ? (m_currentDirection & 0b10) ? 1 : -1 : 0);
+    newHead.ttl = currentHead.ttl;
 
-        Segment newHead;
-        newHead.x = currentHead.x + ((m_currentDirection & 0b01) ? (m_currentDirection & 0b10) ? 1 : -1 : 0);
-        newHead.y = currentHead.y + (not (m_currentDirection & 0b01) ? (m_currentDirection & 0b10) ? 1 : -1 : 0);
-        newHead.ttl = currentHead.ttl;
+    return newHead;
+}
 
-        bool lost = false;
+bool Controller::isNewHeadOnFoodPosition(Segment& newHead)
+{
+    if(std::make_pair(newHead.x, newHead.y) == m_foodPosition) return true;
 
-        for (auto segment : m_segments) {
-            if (segment.x == newHead.x and segment.y == newHead.y) {
-                m_scorePort.send(std::make_unique<EventT<LooseInd>>());
-                lost = true;
-                break;
+    return false;
+}
+bool Controller::isHeadOutsideMap(Segment& newHead)
+{
+    if (newHead.x < 0 or newHead.y < 0 or 
+        newHead.x >= m_mapDimension.first or
+        newHead.y >= m_mapDimension.second) 
+        {
+            m_scorePort.send(std::make_unique<EventT<LooseInd>>());
+            return true;
+        }
+    return false;
+                
+}
+    void Controller::displayLivingSegments()
+    {
+        for (auto &segment : m_segments) //display all living segments
+        {
+            if (not --segment.ttl) 
+            {
+            DisplayInd l_evt;
+            l_evt.x = segment.x;
+            l_evt.y = segment.y;
+            l_evt.value = Cell_FREE;
+            m_displayPort.send(std::make_unique<EventT<DisplayInd>>(l_evt));
             }
         }
-
-        if (not lost) {
-            if (std::make_pair(newHead.x, newHead.y) == m_foodPosition) {
-                m_scorePort.send(std::make_unique<EventT<ScoreInd>>());
-                m_foodPort.send(std::make_unique<EventT<FoodReq>>());
-            } else if (newHead.x < 0 or newHead.y < 0 or
-                       newHead.x >= m_mapDimension.first or
-                       newHead.y >= m_mapDimension.second) {
-                m_scorePort.send(std::make_unique<EventT<LooseInd>>());
-                lost = true;
-            } else {
-                for (auto &segment : m_segments) {
-                    if (not --segment.ttl) {
-                        DisplayInd l_evt;
-                        l_evt.x = segment.x;
-                        l_evt.y = segment.y;
-                        l_evt.value = Cell_FREE;
-
-                        m_displayPort.send(std::make_unique<EventT<DisplayInd>>(l_evt));
-                    }
-                }
-            }
-        }
-
-        if (not lost) {
-            m_segments.push_front(newHead);
+    }
+bool Controller::isNewHeadWrong(Segment& newHead)
+{
+    return isNewSegmentPartOfSnake(newHead) or isHeadOutsideMap(newHead);
+}
+void Controller::plceNewHead(Segment& newHead)
+{
+    m_segments.push_front(newHead);
             DisplayInd placeNewHead;
             placeNewHead.x = newHead.x;
             placeNewHead.y = newHead.y;
@@ -117,13 +135,37 @@ void Controller::receive(std::unique_ptr<Event> e)
 
             m_displayPort.send(std::make_unique<EventT<DisplayInd>>(placeNewHead));
 
-            m_segments.erase(
+            m_segments.erase( // clear expired parts of snake
                 std::remove_if(
                     m_segments.begin(),
                     m_segments.end(),
                     [](auto const& segment){ return not (segment.ttl > 0); }),
                 m_segments.end());
+}
+void Controller::receive(std::unique_ptr<Event> e)
+{
+    try 
+    {
+        auto const& timerEvent = *dynamic_cast<EventT<TimeoutInd> const&>(*e);
+
+        Segment newHead = makeNewHead();
+        
+        bool lost = isNewHeadWrong(newHead); //czy to dobrze ze inicjalizyjemy przy tworzeniu zmiennej czy warto rozbic na 2 linijki?
+        
+        if (not lost) 
+        {
+            if (isNewHeadOnFoodPosition(newHead)) // isNewHeadOnFoodPosition
+            {
+                m_scorePort.send(std::make_unique<EventT<ScoreInd>>());
+                m_foodPort.send(std::make_unique<EventT<FoodReq>>());
+                
+            }
+            
+            else  displayLivingSegments();
+            
+            plceNewHead(newHead);
         }
+
     } catch (std::bad_cast&) {
         try {
             auto direction = dynamic_cast<EventT<DirectionInd> const&>(*e)->direction;
